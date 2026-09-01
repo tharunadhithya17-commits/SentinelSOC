@@ -100,6 +100,8 @@ app.get('/api/agents', auth, (req, res) => {
 
 // ── Event & Alert Ingestion ───────────────────────────────────────────────
 
+const recentEvents = new Map();
+
 app.post('/api/ingest/events', agentAuth, (req, res) => {
   const { events } = req.body || {};
   if (!Array.isArray(events)) return res.status(400).json({ error: 'events[] required' });
@@ -107,8 +109,14 @@ app.post('/api/ingest/events', agentAuth, (req, res) => {
   const insert = db.prepare(`INSERT OR IGNORE INTO events (id,agent_id,hostname,timestamp,event_type,username,source_ip,destination,process,severity,raw)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
 
+  let ingestedCount = 0;
   const insertMany = db.transaction((evts) => {
     for (const e of evts) {
+      const sig = `${req.agent.id}|${e.event_type}|${e.process}|${e.username}|${e.source_ip}|${e.destination}`;
+      const lastSeen = recentEvents.get(sig);
+      if (lastSeen && (Date.now() - lastSeen < 300000)) continue;
+      recentEvents.set(sig, Date.now());
+
       insert.run(
         e.id || `EVT-${short()}`,
         req.agent.id,
@@ -122,10 +130,13 @@ app.post('/api/ingest/events', agentAuth, (req, res) => {
         e.severity || 'LOW',
         e.raw ? JSON.stringify(e.raw) : null
       );
+      ingestedCount++;
     }
   });
   insertMany(events.slice(0, 500)); // cap per batch
-  res.status(201).json({ ingested: events.length });
+  if (recentEvents.size > 10000) recentEvents.clear();
+
+  res.status(201).json({ ingested: ingestedCount });
 });
 
 app.post('/api/ingest/alerts', agentAuth, (req, res) => {
@@ -135,8 +146,12 @@ app.post('/api/ingest/alerts', agentAuth, (req, res) => {
   const insert = db.prepare(`INSERT OR IGNORE INTO alerts (id,agent_id,hostname,timestamp,name,severity,technique,source_ip,username,status)
     VALUES (?,?,?,?,?,?,?,?,?,'NEW')`);
 
+  let ingestedAlerts = 0;
   const insertMany = db.transaction((alts) => {
     for (const a of alts) {
+      const existing = db.prepare(`SELECT id FROM alerts WHERE name=? AND agent_id=? AND status != 'RESOLVED'`).get(a.name, req.agent.id);
+      if (existing) continue;
+
       insert.run(
         a.id || `ALR-${short()}`,
         req.agent.id,
@@ -148,6 +163,7 @@ app.post('/api/ingest/alerts', agentAuth, (req, res) => {
         a.source_ip || null,
         a.username || null
       );
+      ingestedAlerts++;
     }
   });
   insertMany(alerts.slice(0, 100));
@@ -157,7 +173,7 @@ app.post('/api/ingest/alerts', agentAuth, (req, res) => {
   const risk = Math.min(100, count.c * 8);
   db.prepare('UPDATE agents SET risk_score=?, alert_count=? WHERE id=?').run(risk, count.c, req.agent.id);
 
-  res.status(201).json({ ingested: alerts.length });
+  res.status(201).json({ ingested: ingestedAlerts });
 });
 
 // ── Dashboard ─────────────────────────────────────────────────────────────

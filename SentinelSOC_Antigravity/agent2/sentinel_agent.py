@@ -104,13 +104,18 @@ def collect_system_metrics():
                 else psutil.disk_usage("C:\\").percent,
     }
 
-def collect_processes():
+def collect_processes(seen_pids):
     events = []
+    whitelist = ["system idle process", "system", "svchost.exe", "msmpeng.exe", "csrss.exe", "smss.exe", "services.exe", "lsass.exe"]
     try:
         for proc in psutil.process_iter(["pid", "name", "username", "cmdline", "cpu_percent"]):
             try:
                 info = proc.info
                 name = info.get("name", "")
+                pid = info["pid"]
+                
+                if name.lower() in whitelist:
+                    continue
                 # Flag suspicious process names
                 suspicious = any(s in name.lower() for s in [
                     "powershell", "cmd", "wscript", "cscript", "mshta",
@@ -118,6 +123,9 @@ def collect_processes():
                     "mimikatz", "nc.exe", "ncat", "netcat"
                 ])
                 if suspicious:
+                    if pid in seen_pids:
+                        continue
+                    seen_pids.add(pid)
                     events.append({
                         "id":         f"EVT-{short_id()}",
                         "timestamp":  now_iso(),
@@ -125,17 +133,7 @@ def collect_processes():
                         "process":    name,
                         "username":   info.get("username", ""),
                         "severity":   "HIGH",
-                        "raw":        {"pid": info["pid"], "cmdline": " ".join(info.get("cmdline") or [])[:200]},
-                    })
-                else:
-                    events.append({
-                        "id":         f"EVT-{short_id()}",
-                        "timestamp":  now_iso(),
-                        "event_type": "process_snapshot",
-                        "process":    name,
-                        "username":   info.get("username", ""),
-                        "severity":   "LOW",
-                        "raw":        {"pid": info["pid"]},
+                        "raw":        {"pid": pid, "cmdline": " ".join(info.get("cmdline") or [])[:200]},
                     })
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
@@ -143,7 +141,7 @@ def collect_processes():
         log.warning(f"Process collection error: {e}")
     return events[:50]   # cap to 50 per cycle
 
-def collect_network_connections():
+def collect_network_connections(seen_network):
     events = []
     try:
         conns = psutil.net_connections(kind="inet")
@@ -151,6 +149,10 @@ def collect_network_connections():
             if c.status == "ESTABLISHED" and c.raddr:
                 rip = c.raddr.ip
                 rport = c.raddr.port
+                sig = f"{c.laddr.ip if c.laddr else ''}:{c.laddr.port if c.laddr else ''}-{rip}:{rport}"
+                if sig in seen_network:
+                    continue
+                seen_network.add(sig)
                 # Flag known suspicious ports
                 suspicious_ports = {22, 23, 445, 1433, 3306, 3389, 4444, 5900, 6666, 8080}
                 sev = "MEDIUM" if rport in suspicious_ports else "LOW"
@@ -166,7 +168,7 @@ def collect_network_connections():
         log.warning(f"Network collection error: {e}")
     return events[:30]
 
-def collect_failed_logins_windows():
+def collect_failed_logins_windows(seen_logs):
     """Read Windows Security Event Log (Event ID 4625) via PowerShell."""
     events = []
     if platform.system() != "Windows":
@@ -193,6 +195,12 @@ def collect_failed_logins_windows():
             if len(parts) >= 2:
                 user = parts[0].strip() or "UNKNOWN"
                 src_ip = parts[1].strip() or "-"
+                time_created = parts[2].strip() if len(parts) > 2 else ""
+                
+                if time_created:
+                    if time_created in seen_logs: continue
+                    seen_logs.add(time_created)
+                    
                 events.append({
                     "id":         f"EVT-{short_id()}",
                     "timestamp":  now_iso(),
@@ -206,7 +214,7 @@ def collect_failed_logins_windows():
         log.warning(f"Windows Event Log error: {e}")
     return events
 
-def collect_failed_logins_linux():
+def collect_failed_logins_linux(seen_logs):
     """Read /var/log/auth.log for recent failures."""
     events = []
     auth_log = Path("/var/log/auth.log")
@@ -220,6 +228,8 @@ def collect_failed_logins_linux():
             capture_output=True, text=True, timeout=5
         )
         for line in result.stdout.splitlines():
+            if line in seen_logs: continue
+            seen_logs.add(line)
             if "Failed password" in line or "authentication failure" in line:
                 # Basic parse
                 parts = line.split()
@@ -242,11 +252,11 @@ def collect_failed_logins_linux():
         log.warning(f"Linux auth log error: {e}")
     return events
 
-def collect_failed_logins():
+def collect_failed_logins(seen_logs):
     if platform.system() == "Windows":
-        return collect_failed_logins_windows()
+        return collect_failed_logins_windows(seen_logs)
     else:
-        return collect_failed_logins_linux()
+        return collect_failed_logins_linux(seen_logs)
 
 # ── Local Detection Rules ──────────────────────────────────────────────────
 
@@ -321,6 +331,9 @@ def run_agent(cfg):
     agent_id   = cfg["agent_id"]
     api_key    = cfg["api_key"]
     counters   = {}
+    seen_pids = set()
+    seen_network = set()
+    seen_logs = set()
     cycle      = 0
 
     log.info(f"Agent started | id={agent_id} | server={server_url} | interval={POLL_INTERVAL}s")
@@ -332,9 +345,13 @@ def run_agent(cfg):
 
         # Collect telemetry
         metrics   = collect_system_metrics()
-        logins    = collect_failed_logins()
-        processes = collect_processes()
-        network   = collect_network_connections()
+        logins    = collect_failed_logins(seen_logs)
+        processes = collect_processes(seen_pids)
+        network   = collect_network_connections(seen_network)
+
+        if len(seen_pids) > 10000: seen_pids.clear()
+        if len(seen_network) > 10000: seen_network.clear()
+        if len(seen_logs) > 10000: seen_logs.clear()
 
         all_events = logins + processes + network
         log.info(f"Collected: {len(logins)} login events, {len(processes)} processes, {len(network)} network connections")
