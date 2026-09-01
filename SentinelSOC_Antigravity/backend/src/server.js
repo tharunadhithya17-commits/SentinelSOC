@@ -124,7 +124,7 @@ app.post('/api/ingest/events', agentAuth, (req, res) => {
         e.timestamp || now(),
         e.event_type || 'unknown',
         e.username || null,
-        e.source_ip || null,
+        e.source_ip || req.agent.ip,
         e.destination || null,
         e.process || null,
         e.severity || 'LOW',
@@ -160,7 +160,7 @@ app.post('/api/ingest/alerts', agentAuth, (req, res) => {
         a.name,
         a.severity || 'MEDIUM',
         a.technique || null,
-        a.source_ip || null,
+        a.source_ip || req.agent.ip,
         a.username || null
       );
       ingestedAlerts++;

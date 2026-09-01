@@ -1258,6 +1258,77 @@ function InvestigationPage({ onRowClick }) {
     </div>
   );
 }
+// ── Threat Intel Page ──────────────────────────────────────────────────────
+function ThreatIntelPage() {
+  const [ip, setIp] = useState('');
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleLookup = async (e) => {
+    e.preventDefault();
+    if (!ip) return;
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await api('/threat-intel/ip/' + ip);
+      setResult(res);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const mockFeeds = [
+    { indicator: '103.45.98.22', type: 'Malware C2', severity: 'HIGH', seen: '10 mins ago' },
+    { indicator: '45.133.22.1', type: 'Scanner', severity: 'LOW', seen: '1 hour ago' },
+    { indicator: 'evil-domain.local', type: 'Phishing', severity: 'HIGH', seen: '2 hours ago' },
+    { indicator: '192.168.1.100', type: 'Internal Target', severity: 'INFO', seen: 'Yesterday' },
+    { indicator: '203.0.113.50', type: 'Botnet', severity: 'CRITICAL', seen: '2 days ago' }
+  ];
+
+  return (
+    <div className="fade-in" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <Card title="IP Reputation Lookup" sub="Check an indicator against active alerts">
+        <form onSubmit={handleLookup} style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+          <input 
+            type="text" 
+            placeholder="Enter IP address (e.g. 192.168.1.10)" 
+            value={ip} 
+            onChange={(e) => setIp(e.target.value)}
+            style={{ flex: 1, padding: '10px 15px', borderRadius: 6, border: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)', color: 'var(--text-main)', fontSize: 14 }}
+          />
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            <Search size={15}/> {loading ? 'Checking...' : 'Lookup'}
+          </button>
+        </form>
+        
+        {error && <div style={{ color: 'var(--danger)', padding: 10, background: 'rgba(239,68,68,0.1)', borderRadius: 6, fontSize: 13 }}>{error}</div>}
+        
+        {result && (
+          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 20, borderRadius: 8, border: '1px solid var(--border)' }}>
+            <h3 style={{ margin: '0 0 15px 0', fontSize: 16 }}>Result for <span className="mono">{result.ip}</span></h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15, fontSize: 14 }}>
+              <div><strong style={{color:'var(--text2)'}}>Reputation:</strong> <Badge val={result.reputation === 'SUSPICIOUS' ? 'HIGH' : (result.reputation === 'UNKNOWN' ? 'MEDIUM' : 'LOW')} /> <span style={{marginLeft: 8}}>{result.reputation}</span></div>
+              <div><strong style={{color:'var(--text2)'}}>Alerts Seen:</strong> {result.alert_count}</div>
+              {result.details && <div style={{ gridColumn: '1 / 3' }}><strong style={{color:'var(--text2)'}}>Details:</strong> <span style={{color:'var(--text3)'}}>{result.details}</span></div>}
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card title="Global Threat Indicators" sub="Curated Mock Feed">
+        <DataTable 
+          rows={mockFeeds} 
+          cols={['Indicator', 'Type', 'Threat Level', 'Last Seen']} 
+          keys={['indicator', 'type', 'severity', 'seen']} 
+        />
+      </Card>
+    </div>
+  );
+}
 
 // ── Generic Pages ──────────────────────────────────────────────────────────
 function GenericPage({ page, onRowClick }) {
@@ -1447,7 +1518,8 @@ function App() {
           {page === 'Download Agent' && <DownloadAgent />}
           {page === 'Settings'       && <SettingsPage user={user} showToast={showToast} />}
           {page === 'Investigation'  && <InvestigationPage onRowClick={setSelectedDetails} />}
-          {!['Dashboard','Endpoints','Download Agent','Settings','Investigation'].includes(page) && <GenericPage page={page} onRowClick={setSelectedDetails} />}
+          {page === 'Threat Intel'   && <ThreatIntelPage />}
+          {!['Dashboard','Endpoints','Download Agent','Settings','Investigation','Threat Intel'].includes(page) && <GenericPage page={page} onRowClick={setSelectedDetails} />}
         </section>
       </main>
 
